@@ -1,0 +1,398 @@
+---
+title: "High School Graduation Prediction"
+author: "Nelson Marcelo Ferreira Berg"
+date: "2022"
+output:
+  rmarkdown::pdf_document:
+     keep_tex: true
+     number_sections: true
+     toc: true
+     toc_depth: 3
+     latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, cache.lazy = T, message = FALSE, warning = FALSE)
+```
+
+\newpage
+
+
+# Preface
+The objective of this capstone project  is to create a predictive report to achieve the Professional Certificate Program of Data Science from HarvardX.
+
+# Introduction 
+
+Governance and corruption is a big issue that greatly affects education. Education has a weak system and the young people who attend them do not always come from a stable economic and social background. So, there are good chances of not finishing high school. 
+This project is trying to predict high-school graduates in Paraguay using the *House’s Permanent Poll* or *Encuesta Permanente de Hogares Continua* (EPHC) database from the *General Directorate of Statistics* from Paraguay. The EPHC collects information on different dimensions of the well-being of Paraguayan households, such as education, health, employment and income, among others. This report focuses on education.
+
+We are going to use the EPHC database from 2019 for training our models and the EPHC from 2020 to test the models.
+
+# Data Preparation
+The first step in the project is to download the necessary packages and load the EPHC databases.
+```{r, message=FALSE, warning=FALSE}
+# Loading packages
+if(!require(caret)) install.packages("caret", repos="http://cran.us.r-project.org")
+if(!require(e1071)) install.packages("e1071", repos="http://cran.us.r-project.org")
+if(!require(haven)) install.packages("haven", repos="http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos="http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos="http://cran.us.r-project.org")
+if(!require(ggpmisc)) install.packages("ggpmisc", repos="http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos="http://cran.us.r-project.org")
+if(!require(MLmetrics)) install.packages("MLmetrics", repos="http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos="http://cran.us.r-project.org")
+if(!require(stringr)) install.packages("stringr", repos="http://cran.us.r-project.org")
+if(!require(surveyr)) install.packages("survey", repos="http://cran.us.r-project.org")
+if(!require(srvyr)) install.packages("srvyr", repos="http://cran.us.r-project.org")
+if(!require(tidyverse)) install.packages("tidyverse", repos="http://cran.us.r-project.org")
+```
+
+##Load database
+
+```{r}
+set.seed(1, sample.kind = "Rounding")
+#2019 
+ephc2019 <- read_sav("reg02_ephc2019.sav")
+
+#2020
+ephc2020 <- read_sav("reg02_ephc2020.sav")
+```
+
+## Variables in the data set
+We explore the variables in the EPHC data set.
+```{r}
+glimpse(ephc2019)
+```
+
+As we can see here, there are many variables on our database. Now, we will select the ones we will be using for the data exploration and modeling. There's also many NA, we'll deal with them.
+
+## Wrangling
+
+```{r}
+# The data from 2019 will be our train set
+eph_2019 <- ephc2019 %>% 
+  select(UPM, NVIVI, NHOGA, DPTOREP, AREA, P02, P03, P04A, P06, P08A, 
+         E01A, ED01, ED02, ED0504, añoest, ED09, S01A, S01B, FEX, NMAD, NPAD, pobnopoi, TIC0510, quintili, decili)
+
+# The data from 2020 will be our test set
+eph_2020 <- ephc2020 %>% select(UPM, NVIVI, NHOGA, DPTOREP, AREA, P02, P03, P04A, P06, P08A, 
+                                E01A, ED01, ED02, ED0504,añoest, ED09, S01A, S01B, FEX, NMAD, NPAD, pobnopoi, TIC0510, quintili, decili)
+
+
+# Remove the NA values
+eph_2019 <- eph_2019 %>%
+  filter(!is.na(AREA)) %>%
+  filter(!is.na(añoest)) %>%
+  filter(!is.na(P02)) %>%
+  filter(!is.na(pobnopoi)) %>%
+  filter(!is.na(ED01))
+
+eph_2020 <- eph_2020 %>%
+  filter(!is.na(AREA)) %>%
+  filter(!is.na(añoest)) %>%
+  filter(!is.na(P02)) %>%
+  filter(!is.na(pobnopoi)) %>%
+  filter(!is.na(ED01))
+
+rm(ephc2019, ephc2020)
+
+```
+Selected variables for our databases:
+
+UPM + NVIVI + NHOGA = Household Identification
+DPTOREP = Departament
+AREA = Residence Area
+P02 = Household member's age
+P03 = Family relationship
+P04A = Do you have an identity card?
+P06 = Sex
+P08A = Birth year
+E01A = Monthly income Main occupation declared
+ED01 = Language spoken in the home most of the time
+ED02 = Can you read and write?
+ED0504 = Highest level and grade passed 
+añoest = Years of study 
+ED09 = The institution or program where you attend is in the sector 
+S01A = Do you currently have any health insurance in force in the country?
+S01B = Do you have insurance and what type of insurance?
+FEX = Expansion factor
+NMAD = Mother's level and degree of education
+NPAD = Father's level and degree of education
+pobnopoi = poverty level (constructed variable)
+TIC0510 = If you have an Internet connection (constructed variable)
+
+
+```{r}
+# Create 'glyst_hs' variable
+eph_2019<- eph_2019 %>% 
+  filter(!is.na(añoest)) %>% 
+  filter(!añoest %in% c("99")) %>% 
+  mutate(glyst_hs = ifelse(añoest %in%
+                             c("1","2","3","4","5","6", "7", "8", "9", "10", "11"), "<12",
+                           ifelse(añoest %in%
+                                    c("12", "13", "14", "15", "16", "17", "18"), ">=12", "<12")))
+eph_2019 <- eph_2019 %>% mutate(glyst_hs = as.factor(glyst_hs))
+
+eph_2020<- eph_2020 %>% 
+  filter(!is.na(añoest)) %>% 
+  filter(!añoest %in% c("99")) %>% 
+  mutate(glyst_hs = ifelse(añoest %in%
+                             c("1","2","3","4","5","6", "7", "8", "9", "10", "11"), "<12",
+                           ifelse(añoest %in%
+                                    c("12", "13", "14", "15", "16", "17", "18"), ">=12", "<12")))
+eph_2020 <- eph_2020 %>% mutate(glyst_hs = as.factor(glyst_hs))
+
+#Creating the 'graduate' variable
+eph_2019 <- eph_2019 %>% 
+  filter(!is.na(añoest)) %>% 
+  mutate(graduate = ifelse(añoest %in% c("12"), "HSgrad",
+                           ifelse(añoest %in% c("1","2","3","4","5","6"), "EEB_1_2",
+                                  ifelse(añoest %in% c("7", "8", "9"), "EEB3",
+                                         ifelse(añoest %in% c("10", "11"), "EM",
+                                                ifelse(añoest %in% 
+                                                         c("13", "14", "15","16", "17", "18"), "H_ED", 0))))))
+
+eph_2020 <- eph_2020 %>% 
+  filter(!is.na(añoest)) %>%
+  mutate(graduate = ifelse(añoest %in% 
+                             c("12"), "HSgrad",ifelse(añoest %in% 
+                                                        c("1","2","3","4","5","6"), "EEB_1_2", 
+                                                      ifelse(añoest %in% c("7", "8", "9"), "EEB3",
+                                                             ifelse(añoest %in% c("10", "11"), "EM", 
+                                                                    ifelse(añoest %in% c("13", "14", "15","16", "17", "18"), "H_ED", 0))))))
+
+```
+We created two new variables: 
+
+*glyst_hs: describes the goal of years studied a person need to finish high-school in Paraguay. In Paraguay, 12 years is the normal duration to finish school and high-school.
+*graduate: describes the title of the last academic year achieved in Paraguay.
+
+# Data exploration
+
+In this phase, after loading the databases and preparing the data, we can begin with the data exploration.
+
+## Characteristics of high-school graduates.
+
+
+```{r, message=FALSE,warning=FALSE}
+#Graduation per area 
+eph_2019 %>% group_by(graduate) %>% ggplot(aes(as_factor(AREA)))+ geom_bar(aes(fill=graduate)) + labs(x = "Area", y ="Amount of graduates") + scale_fill_brewer(palette = "RdYlBu")+ theme_bw()
+```
+
+We can observe the distribution of the different titles of the last academic year achieved classified by urban and rural areas.
+
+## Characteristics of  high-school graduates.
+
+```{r}
+#High School graduation per area 
+eph_2019 %>% group_by(graduate) %>% filter(añoest %in% c("12")) %>% ggplot(aes(as_factor(AREA)))+ geom_bar(aes(fill=graduate), show.legend = FALSE) + labs(x = "Area", y ="Amount of graduates") + scale_fill_brewer(palette = "RdYlBu")+ theme_bw()
+
+```
+In this graph we can observe that there is a larger amount of high-school graduates in urban areas than in rural areas. People from urban areas have higher chances of graduating from highschool.
+
+```{r}
+#Poverty Level
+poverty <- eph_2019 %>% group_by(as_factor(pobnopoi)) %>% filter(añoest ==  12) %>% count(pobnopoi) 
+pvrty <-eph_2019 %>% group_by(as_factor(pobnopoi)) %>% filter(añoest %in% c("12")) %>% ggplot(aes(as_factor(pobnopoi))) + geom_bar(aes(fill= "#FC8C58"),show.legend = FALSE) + labs(x = "Poverty Level", y ="Amount of high school graduates") + scale_fill_brewer(palette = "RdYlBu") + theme_bw()
+pvrty + annotate(geom = "table", x = 3, y = 1500, label = list(poverty))  
+
+```
+
+Most of our high-school graduates are considered "not poor" by the Poll.
+
+```{r}
+#Area and language spoken
+eph_2019 %>% filter(ED01 %in% c("1","2","3")) %>% ggplot(aes(x=as_factor(AREA)))+ geom_bar(aes(fill=as_factor(ED01))) + xlab("Language") + labs(fill="Language")  + stat_count(geom = "text", colour = "black", size = 3.5, aes(label = ..count..),position=position_stack(vjust=1.1))+ scale_fill_brewer(palette = "RdYlBu") + theme_bw()
+```
+In Paraguay there are two official languages: spanish and guaraní. 
+We can notice that guaraní is the common language in rural areas, while spanish has a greater role in urban areas.
+
+```{r}
+#Last degree obtained and language spoken
+eph_2019 %>% filter(ED01%in%c("1","2","3")) %>% ggplot(aes(graduate)) + geom_bar(aes(fill=as_factor(ED01)))+ labs(fill="Language") + xlab("Language") + theme_bw() + coord_flip()+ scale_fill_brewer(palette = "RdYlBu") + theme_bw()
+
+```
+This graph show us the distribution of last academic titles achieved by language. For high-school graduates there is not a significant relevance shown.
+
+```{r}
+#Years of study by language spoken
+eph_2019 %>% filter(ED01 %in% c("1","2","3")) %>%
+filter(añoest%in%c("0","1","2","3","4","5","6","7","8","9","10", "11","12")) %>%
+group_by(ED01)%>%
+ggplot(aes(as_factor(ED01), as.numeric(añoest)))+
+geom_boxplot()+
+ylab("Studied years")+
+xlab("Language")+
+theme_economist()
+```
+Unlike the last graph shown, this box-plot is more informative. We can observe that guaraní-speakers are less likely to have the 12 years or finishing high-school.
+
+# Modeling
+
+In this data science project, we are working in a classification problem. As it was vaguely explained before, we are going to use the EPHC 2019 data set to train our models. We divide the data set in *train_set* (to train the models) and *test_set* (to test the models). Later, we use the EPHC 2020 data set for validation.
+
+## Preparation
+
+```{r}
+set.seed(1, sample.kind = "Rounding")
+eph_2019 <- eph_2019 %>% select(AREA, añoest, P02, pobnopoi, ED01, glyst_hs)
+eph_2019 <- eph_2019 %>% mutate_at(
+  vars("AREA", "añoest", "pobnopoi", "ED01", "glyst_hs"),
+  funs(as_factor(.))
+)
+for (i in 1:length(eph_2019$añoest))
+  {
+  eph_2019$añoest[i]<-ifelse(eph_2019$añoest[i]=="Sin instrucción", 0, eph_2019$añoest[i])
+}
+eph_2019$añoest<-as.numeric(eph_2019$añoest)
+eph_2019$P02<-as.numeric(eph_2019$P02)
+eph_2019<- eph_2019 %>%  # Create glyst_hs variable
+  filter(!is.na(añoest))
+
+eph_2019 <- eph_2019 %>% select(AREA, añoest, P02, pobnopoi, ED01, glyst_hs)
+test_index <- createDataPartition(eph_2019$glyst_hs, times=1, p=0.2, list = F)
+train_set <- eph_2019[-test_index,]
+test_set <- eph_2019[test_index,]
+model_weights <- ifelse(train_set$glyst_hs == "<12",
+                        (1/table(train_set$glyst_hs)[1]) * 0.5,
+                        (1/table(train_set$glyst_hs)[2]) * 0.5)
+sum(model_weights)#The sum must equal 1
+rm(test_index)
+
+```
+
+## SVM model (Support Vector Machine)
+
+The SVM is a supervised model for classification algorithm that produces significant accuracy with less computation power.
+The objective of the SVM algorithm is to find a hyperplane in an N-dimensional space that distinctly classifies the data points, using the support vectors to maximize the margin of the classifier.
+
+The dependent variable we are going to use is glyst_hs.
+
+The independent variables that we are going to use for the models are:
+*AREA
+*P02
+*pobnopoi
+*ED01
+
+
+```{r}
+# SVM Model
+svm.eph = svm(glyst_hs ~AREA+P02+pobnopoi+ED01, data = train_set)
+test_set$pred.value = predict(svm.eph, newdata = test_set,type="response")
+confusionMatrix(test_set$glyst_hs, test_set$pred.value)
+```
+
+```{r}
+results <- data.frame(
+  Model="SVM (Support Vector Machine)",
+  Accuracy=
+    Accuracy(test_set$glyst_hs, test_set$pred.value),
+  F1Score=
+    F1_Score(test_set$glyst_hs, test_set$pred.value),
+  Specificity=
+   specificity(test_set$glyst_hs, test_set$pred.value),
+  Sensitivity=
+    sensitivity(test_set$glyst_hs, test_set$pred.value))
+results
+```
+We can observe that the SVM model has a good accuracy in general for all the scores. The F1 score is the highest.
+## Decision Tree
+
+```{r}
+# Applying Decision Tree Model
+detree <- rpart(glyst_hs ~
+                  AREA + P02 + pobnopoi + ED01,
+                data = train_set)
+# Prediction of data and Confusion Matrix
+test_set$pred.value2 = predict(detree, newdata = test_set, type="class")
+confusionMatrix(test_set$glyst_hs, test_set$pred.value2)
+```
+
+```{r}
+results<- bind_rows(results,
+  data.frame(Model="Decision Tree",
+             Accuracy=
+               Accuracy(test_set$glyst_hs, test_set$pred.value2),
+             F1Score=
+               F1_Score(test_set$glyst_hs, test_set$pred.value2),
+             Specificity=
+               specificity(test_set$glyst_hs, test_set$pred.value),
+             Sensitivity=
+               sensitivity(test_set$glyst_hs, test_set$pred.value)))
+results
+```
+With the Decision Tree model we can observe good accuracy in general in the scores. The F1 score is the highest in this model too.
+
+# Validation
+We have train two models and the SVM model is the most accurate among the two. So, in the validation phase we are going to use the SVM model.
+
+## Preparation
+```{r}
+set.seed(1, sample.kind = "Rounding")
+eph_2020 <- eph_2020 %>% select(AREA, añoest, P02, pobnopoi, ED01, glyst_hs)
+eph_2020 <- eph_2020 %>% mutate_at(
+  vars("AREA", "añoest", "pobnopoi", "ED01", "glyst_hs"),
+  funs(as_factor(.))
+)
+for (i in 1:length(eph_2020$añoest))
+  {
+  eph_2020$añoest[i]<-ifelse(eph_2020$añoest[i]=="Sin instrucción", 0, eph_2020$añoest[i])
+}
+eph_2020$añoest<-as.numeric(eph_2020$añoest)
+eph_2020$P02<-as.numeric(eph_2020$P02)
+eph_2020<- eph_2020 %>%  # Create glyst_hs variable
+  filter(!is.na(añoest))
+
+eph_2020 <- eph_2020 %>% select(AREA, añoest, P02, pobnopoi, ED01, glyst_hs)
+model_weights <- ifelse(eph_2020$glyst_hs == "<12",
+                        (1/table(eph_2020$glyst_hs)[1]) * 0.5,
+                        (1/table(eph_2020$glyst_hs)[2]) * 0.5)
+sum(model_weights)#The sum must equal 1
+
+```
+
+## SVM Validation
+
+```{r}
+svm.eph = svm(glyst_hs ~
+                  AREA +  P02 + pobnopoi + ED01,
+                data = eph_2020)
+eph_2020$pred.value = predict(svm.eph, newdata = eph_2020,type="response")
+ConfusionMatrix(eph_2020$glyst_hs, eph_2020$pred.value)
+
+```
+
+```{r}
+results<- bind_rows(
+  results,
+  data.frame(Model="Validation - SVM",
+             Accuracy=
+               Accuracy(eph_2020$glyst_hs, eph_2020$pred.value),
+             F1Score=
+               F1_Score(eph_2020$glyst_hs, eph_2020$pred.value),
+             Specificity=
+               specificity(test_set$glyst_hs, test_set$pred.value),
+             Sensitivity=
+               sensitivity(test_set$glyst_hs, test_set$pred.value)))
+results
+```
+We see that for the SVM Validation model the accuracy is a little smaller than in the train_set data set. However, it is a good score and the F1 score is the highest again.
+# Results
+The results table is a summary of all models we have done so far. As it was described before, the Support Vector Machine model is the most appropriate model for our data science model. The decision tree has a big score, but is not better than the SVM model.
+```{r}
+results
+```
+The **SVM Model** is better in the accuracy and F1 Score. The **Decision Tree** has a minor score, but the diference is not very large.
+Using the **SVM Model** for validation has less score than in the train_Set.
+
+# Conclusion
+
+At first, we loaded the EPHC datasets from 2019 and 2020. We prepared the EPHC 2019 dataset for training purposes and then we used the EHPC 2020 for validation. 
+We explored the data and selected a few variables that were more significant for visualising. We did some wrangling for better data visualization and observed some relevant information.
+Finally, we proceeded to the modeling phase to train the models and figure out which model is the best for this project.
+
+### Limitations 
+The two models used for the project had satisfactory results, using more models could overtrain the data set and give wrong results.
+
+### Future work
+The EPHC data base is huge and has a lot of variables. Some variables could be use for modeling from a different perception and generate interesting results. There are variables such as access to Wi-Fi connection, genre, income that after some wrangling could be use in the models. Some variables I could not use because of the limitations from my notebook's features. My Specificity and Sensitivity score did not change, so I encourage for future work to figure out why the results are the same in the different models.
